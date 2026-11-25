@@ -11,6 +11,7 @@ use lore_revision::branch::merge::MergeError;
 use lore_revision::branch::merge::MergeIntoOptions;
 use lore_revision::branch::merge::MergeScope;
 use lore_revision::branch::merge::MergeStartOptions;
+use lore_revision::branch::push::ApprovedPush;
 use lore_revision::branch::push::PushOptions;
 use lore_revision::branch::reset::ResetError;
 use lore_revision::interface::LoreArray;
@@ -34,6 +35,7 @@ use crate::call::repository_call_read;
 use crate::call::repository_call_write;
 use crate::call_delegation::dispatch_call;
 use crate::interface::Context;
+use crate::interface::Hash;
 use crate::interface::LoreString;
 use crate::util::path_messages;
 
@@ -902,14 +904,41 @@ fn push_local(
         callback,
         args,
         push,
-        |repository, token, args| async move { push_impl(repository, &token, args).await },
+        |repository, token, args| async move { push_impl(repository, &token, args, None).await },
     )
+}
+
+/// Runs a push constrained to one approved revision in this process.
+pub fn push_approved(
+    globals: LoreGlobalArgs,
+    args: LoreBranchPushArgs,
+    revision: Hash,
+    base: Hash,
+    callback: LoreEventCallback,
+) -> i32 {
+    let call = repository_call_write(
+        globals,
+        callback,
+        args,
+        push,
+        move |repository, token, args| async move {
+            push_impl(
+                repository,
+                &token,
+                args,
+                Some(ApprovedPush { revision, base }),
+            )
+            .await
+        },
+    );
+    crate::call_delegation::block_on_command(std::pin::pin!(call))
 }
 
 async fn push_impl(
     repository: Arc<RepositoryContext>,
     token: &RepositoryWriteToken,
     args: LoreBranchPushArgs,
+    approved: Option<ApprovedPush>,
 ) -> Result<(), branch::push::PushError> {
     repository
         .remote()
@@ -919,6 +948,7 @@ async fn push_impl(
     let options = PushOptions {
         branch: args.branch.into(),
         fast_forward_merge: args.fast_forward_merge != 0,
+        approved,
     };
 
     // Push is never local

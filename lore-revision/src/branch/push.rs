@@ -331,6 +331,15 @@ pub struct PushOptions {
     pub branch: Option<String>,
     /// Allow the server to fast-forward merge if the target branch head has moved
     pub fast_forward_merge: bool,
+    /// Restrict the push to one approved revision from a fixed branch point.
+    pub approved: Option<ApprovedPush>,
+}
+
+/// The only revision a guarded push may publish, and its sole parent.
+#[derive(Clone, Copy, Debug)]
+pub struct ApprovedPush {
+    pub revision: Hash,
+    pub base: Hash,
 }
 
 impl EventError for PushError {
@@ -575,9 +584,75 @@ pub(crate) async fn push(
             .forward::<PushError>("loading current anchor")?;
     }
 
+    if let Some(approved) = options.approved {
+        if options.fast_forward_merge || execution_context().globals().force() {
+            return Err(InvalidArguments {
+                reason: "Approved push cannot force or merge a revision".into(),
+            }
+            .into());
+        }
+        check_approved_revision(&repository, local_latest, approved).await?;
+    }
     let (targets, orders) =
         collect_targets(repository, branch, local_latest, options.fast_forward_merge).await?;
+    if let Some(approved) = options.approved {
+        check_approved_targets(&targets, approved)?;
+    }
     push_targets(&targets, &orders, token, options.fast_forward_merge).await
+}
+
+async fn check_approved_revision(
+    repository: &Arc<RepositoryContext>,
+    latest: Hash,
+    approved: ApprovedPush,
+) -> Result<(), PushError> {
+    if approved.base.is_zero() || approved.revision.is_zero() || latest != approved.revision {
+        return Err(InvalidArguments {
+            reason: "Branch latest does not match the approved revision".into(),
+        }
+        .into());
+    }
+    let state = State::deserialize(repository.clone(), latest)
+        .await
+        .forward::<PushError>("reading the approved revision")?;
+    if state.parent_self() != approved.base || !state.parent_other().is_zero() {
+        return Err(InvalidArguments {
+            reason: "Approved revision does not directly follow the expected base".into(),
+        }
+        .into());
+    }
+    let parent = State::deserialize(repository.clone(), approved.base)
+        .await
+        .forward::<PushError>("reading the approved revision's parent")?;
+    if parent.revision_number().checked_add(1) != Some(state.revision_number()) {
+        return Err(InvalidArguments {
+            reason: "Approved revision has a noncanonical revision number".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn check_approved_targets(targets: &[PushTarget], approved: ApprovedPush) -> Result<(), PushError> {
+    if let [target] = targets {
+        let plan = &target.plan;
+        let already_published =
+            plan.remote_latest == approved.revision && plan.revisions.is_empty();
+        let directly_publishable = (plan.remote_latest.is_zero()
+            || plan.remote_latest == approved.base)
+            && matches!(plan.revisions.as_slice(), [item] if item.local && item.revision == approved.revision);
+        if plan.branch_point == approved.base
+            && !plan.remote_deleted
+            && !plan.diverged
+            && (already_published || directly_publishable)
+        {
+            return Ok(());
+        }
+    }
+    Err(InvalidArguments {
+        reason: "Push plan must contain only the approved revision on its own branch".into(),
+    }
+    .into())
 }
 
 /// Most targets one push plans or pushes at once. A few at once overlap their round trips, and each
@@ -1551,6 +1626,11 @@ fn collect_unpushed_history(
             } else {
                 remote_latest
             };
+
+            if current_revision == current_remote_latest && !current_revision.is_zero() {
+                remote_revision = Some(current_revision);
+                break;
+            }
 
             let branch_point = if current_branch == branch {
                 branch_metadata.branch_point().cloned()

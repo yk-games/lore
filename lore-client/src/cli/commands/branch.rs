@@ -13,6 +13,7 @@ use lore::branch::LoreBranchMetadataGetArgs;
 use lore::branch::LoreBranchMetadataSetArgs;
 use lore::call_delegation::run_command;
 use lore::interface::Context;
+use lore::interface::Hash;
 use lore::interface::LoreArray;
 use lore::interface::LoreBranchArchiveArgs;
 use lore::interface::LoreBranchCreateArgs;
@@ -87,6 +88,14 @@ pub struct BranchPushArgs {
     /// Allow the server to fast-forward merge if the target branch head has moved
     #[clap(long)]
     fast_forward_merge: bool,
+
+    /// Require the named branch to publish exactly this revision.
+    #[clap(long, requires_all = ["name", "expect_base"], conflicts_with = "fast_forward_merge")]
+    expect_revision: Option<Hash>,
+
+    /// Require this revision to be the branch point and sole parent.
+    #[clap(long, requires = "expect_revision")]
+    expect_base: Option<Hash>,
 }
 
 #[derive(Args)]
@@ -1040,7 +1049,10 @@ pub fn handle_branch_push(globals: LoreGlobalArgs, args: &BranchPushArgs) -> u8 
             .with_defaults(),
     ));
 
-    return run_command(globals, push_args.into(), callback) as u8;
+    if let (Some(revision), Some(base)) = (args.expect_revision, args.expect_base) {
+        return lore::branch::push_approved(globals, push_args, revision, base, callback) as u8;
+    }
+    run_command(globals, push_args.into(), callback) as u8
 }
 
 fn handle_branch_merge_unresolve(globals: LoreGlobalArgs, args: &BranchMergeUnresolveArgs) -> u8 {

@@ -4,6 +4,7 @@ import logging
 import os
 
 import pytest
+from error_types import LoreException
 from lore_parsers import parse_jsonl, parse_push_stats_json, parse_revision_list_json
 
 from lore import Lore
@@ -15,6 +16,73 @@ logger = logging.getLogger(__name__)
 # this, a gigabyte of random data written, pushed, cloned and compared, which
 # made the test one of the slowest in the suite without covering more.
 LARGE_FILE_SIZE = 34567890
+
+
+@pytest.mark.smoke
+@pytest.mark.own_vfs("guarded push requires a materialized working tree")
+def test_push_checks_the_approved_revision_and_history(new_lore_repo, scratch_dir):
+    repo: Lore = new_lore_repo()
+    with repo.open_file("note.txt", "w") as output:
+        output.write("baseline")
+    repo.stage(scan=True)
+    repo.commit("Baseline", offline=True)
+    base = repo.branch_info("main").local_latest
+    repo.push("main")
+    source = repo.clone(offline=True, use_shared_store=True)
+    repo = source.repository_instance_clone(
+        str(scratch_dir("candidate_instance")), offline=True, allow_copy=True
+    )
+    repo.branch_switch("main", str(base), bare=True, offline=True)
+    repo.branch_create("candidate", offline=True)
+    repo.branch_switch("candidate", offline=True)
+
+    def commit_note(value):
+        with repo.open_file("note.txt", "w") as output:
+            output.write(value)
+        repo.dirty("note.txt")
+        repo.stage(scan=True)
+        repo.commit(value, offline=True)
+        return repo.branch_info(offline=True).local_latest
+
+    approved = commit_note("approved")
+
+    def push_args(branch, revision, parent):
+        return [
+            "push",
+            branch,
+            "--expect-revision",
+            str(revision),
+            "--expect-base",
+            str(parent),
+        ]
+
+    args = push_args("candidate", approved, base)
+    with pytest.raises(LoreException) as mismatch:
+        repo.run(push_args("candidate", base, base))
+    assert mismatch.value.returncode == 3
+    repo.run(args)
+    repo.run(args)
+    assert repo.branch_info("candidate").remote_latest == approved
+
+    newer = commit_note("unapproved")
+    with pytest.raises(LoreException) as stale:
+        repo.run(args)
+    assert stale.value.returncode == 3
+    with pytest.raises(LoreException) as history:
+        repo.run(push_args("candidate", newer, base))
+    assert history.value.returncode == 3
+    assert repo.branch_info("candidate").remote_latest == approved
+
+    repo.branch_create("stacked", offline=True)
+    repo.branch_switch("stacked", offline=True)
+    stacked = commit_note("stacked candidate")
+    with pytest.raises(LoreException) as plan:
+        repo.run(push_args("stacked", stacked, newer))
+    assert plan.value.returncode == 3
+    with pytest.raises(LoreException) as absent:
+        repo.branch_info("stacked", remote=True)
+    assert absent.value.returncode == 79
+    assert repo.branch_info("candidate").remote_latest == approved
 
 
 @pytest.mark.smoke
