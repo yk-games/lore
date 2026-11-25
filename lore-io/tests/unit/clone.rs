@@ -9,6 +9,7 @@
 
 use std::fs::FileTimes;
 use std::io;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -355,7 +356,7 @@ fn a_backend_the_volume_cannot_use_fails_or_copies() {
 }
 
 /// With `LORE_TEST_CLONE_DIR` naming a directory on a volume that clones files, such as Btrfs,
-/// XFS or a ReFS volume, the backend clones a tree, copies no files and keeps writes separate. Ignored,
+/// XFS or a `ReFS` volume, the backend clones a tree, copies no files and keeps writes separate. Ignored,
 /// and run with `--ignored` where the variable names such a directory.
 #[test]
 #[ignore = "needs LORE_TEST_CLONE_DIR naming a directory on a volume that clones files"]
@@ -395,10 +396,19 @@ fn a_block_cloning_volume_named_for_the_test_clones_its_files() {
             "{relative}"
         );
     }
-    std::fs::write(destination.join("top.txt"), b"changed").expect("write clone");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(destination.join("large.bin"))
+        .expect("open clone")
+        .write_all(&[7])
+        .expect("overwrite first byte of clone");
     assert_eq!(
-        std::fs::read(source.join("top.txt")).expect("read source"),
-        b"top"
+        std::fs::read(source.join("large.bin")).expect("read source")[0],
+        3
+    );
+    assert_eq!(
+        std::fs::read(destination.join("large.bin")).expect("read clone")[0],
+        7
     );
 }
 
