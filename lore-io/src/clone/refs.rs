@@ -44,7 +44,9 @@ pub(super) fn clone_file(source: Source<'_>, destination: &Path) -> io::Result<(
         OpenedSource::File(input) => input,
         OpenedSource::Link => return entry::link(source, destination),
     };
+    // FSCTL_SET_INTEGRITY_INFORMATION requires read and write access to the destination handle.
     let output = std::fs::OpenOptions::new()
+        .read(true)
         .write(true)
         .create_new(true)
         .open(destination)?;

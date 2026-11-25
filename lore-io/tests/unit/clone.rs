@@ -355,7 +355,7 @@ fn a_backend_the_volume_cannot_use_fails_or_copies() {
 }
 
 /// With `LORE_TEST_CLONE_DIR` naming a directory on a volume that clones files, such as Btrfs,
-/// XFS or a Dev Drive, the backend found for it clones a tree there and copies nothing. Ignored,
+/// XFS or a ReFS volume, the backend clones a tree, copies no files and keeps writes separate. Ignored,
 /// and run with `--ignored` where the variable names such a directory.
 #[test]
 #[ignore = "needs LORE_TEST_CLONE_DIR naming a directory on a volume that clones files"]
@@ -395,6 +395,11 @@ fn a_block_cloning_volume_named_for_the_test_clones_its_files() {
             "{relative}"
         );
     }
+    std::fs::write(destination.join("top.txt"), b"changed").expect("write clone");
+    assert_eq!(
+        std::fs::read(source.join("top.txt")).expect("read source"),
+        b"top"
+    );
 }
 
 /// A file rewritten after it is listed and before it is copied keeps the time of the content
